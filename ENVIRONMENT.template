@@ -14,3 +14,8 @@ CORS_ORIGIN=*
 # اجعله true فقط إذا طلب اتصال PostgreSQL استخدام SSL
 PGSSL=false
 DB_POOL_MAX=10
+
+# حساب مالك التطبيق — يُنشأ أو يُحدّث تلقائياً عند تشغيل API
+ADMIN_USERNAME=admin
+ADMIN_DISPLAY_NAME=مالك شات بوز
+ADMIN_PASSWORD=ضع_كلمة_مرور_قوية_في_Railway
