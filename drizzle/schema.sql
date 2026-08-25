@@ -6,12 +6,20 @@ CREATE TABLE IF NOT EXISTS users (
   username VARCHAR(32) NOT NULL UNIQUE,
   display_name VARCHAR(80) NOT NULL,
   password_hash TEXT NOT NULL,
+  role VARCHAR(16) NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin', 'assistant', 'owner')),
+  admin_permissions JSONB NOT NULL DEFAULT '{}'::jsonb,
   avatar_url TEXT,
   bio VARCHAR(240),
   points BIGINT NOT NULL DEFAULT 0 CHECK (points >= 0),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(16) NOT NULL DEFAULT 'user';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_permissions JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('user', 'admin', 'assistant', 'owner'));
+UPDATE users SET role = 'user' WHERE role IS NULL;
 
 CREATE TABLE IF NOT EXISTS rooms (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
