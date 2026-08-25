@@ -14,6 +14,9 @@ const PORT = Number(process.env.PORT || 3000);
 const JWT_SECRET = process.env.JWT_SECRET || 'chat-buzz-development-secret-change-me';
 const isProduction = process.env.NODE_ENV === 'production';
 const DATABASE_URL = process.env.DATABASE_URL;
+const ADMIN_USERNAME = (process.env.ADMIN_USERNAME || 'admin').trim().toLowerCase();
+const ADMIN_DISPLAY_NAME = process.env.ADMIN_DISPLAY_NAME || 'مالك شات بوز';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 if (isProduction && !process.env.JWT_SECRET) {
   console.error('JWT_SECRET is required in production.');
@@ -53,13 +56,15 @@ function publicUser(user) {
     displayName: user.display_name,
     avatarUrl: user.avatar_url,
     bio: user.bio,
+    role: user.role || 'user',
+    permissions: user.admin_permissions || {},
     points: Number(user.points || 0),
     createdAt: user.created_at,
   };
 }
 
 function createToken(user) {
-  return jwt.sign({ sub: user.id, username: user.username }, JWT_SECRET, { expiresIn: '30d' });
+  return jwt.sign({ sub: user.id, username: user.username, role: user.role || 'user' }, JWT_SECRET, { expiresIn: '30d' });
 }
 
 function getBearerToken(req) {
@@ -77,7 +82,7 @@ async function authRequired(req, res, next) {
       return res.status(503).json({ ok: false, error: 'database_unavailable', message: 'قاعدة البيانات غير جاهزة.' });
     }
     const result = await pool.query(
-      'SELECT id, username, display_name, avatar_url, bio, points, created_at FROM users WHERE id = $1',
+      'SELECT id, username, display_name, avatar_url, bio, points, role, admin_permissions, created_at FROM users WHERE id = $1',
       [payload.sub],
     );
     if (!result.rows[0]) {
@@ -88,6 +93,31 @@ async function authRequired(req, res, next) {
   } catch (error) {
     return res.status(401).json({ ok: false, error: 'invalid_token', message: 'رمز الدخول غير صالح أو منتهي.' });
   }
+}
+
+function adminRequired(req, res, next) {
+  if (!req.user || !['owner', 'admin', 'assistant'].includes(req.user.role)) {
+    return res.status(403).json({ ok: false, error: 'admin_required', message: 'هذه العملية متاحة للإدارة فقط.' });
+  }
+  next();
+}
+
+function ownerRequired(req, res, next) {
+  if (!req.user || req.user.role !== 'owner') {
+    return res.status(403).json({ ok: false, error: 'owner_required', message: 'هذه العملية متاحة لمالك التطبيق فقط.' });
+  }
+  next();
+}
+
+function hasPermission(req, permission) {
+  return req.user?.role === 'owner' || req.user?.role === 'admin' || req.user?.permissions?.[permission] === true;
+}
+
+function permissionRequired(permission) {
+  return (req, res, next) => {
+    if (!hasPermission(req, permission)) return res.status(403).json({ ok: false, error: 'permission_required', message: 'لا تملك صلاحية تنفيذ هذه العملية.' });
+    next();
+  };
 }
 
 function validate(schema, source = 'body') {
@@ -133,6 +163,19 @@ const messageSchema = z.object({
   body: z.string().trim().min(1).max(2000),
 });
 
+const createAdminUserSchema = z.object({
+  username: z.string().trim().min(3).max(32).regex(/^[a-zA-Z0-9_]+$/),
+  displayName: z.string().trim().min(2).max(80),
+  password: z.string().min(6).max(128),
+});
+
+const updateAdminRoleSchema = z.object({
+  role: z.enum(['user', 'admin', 'assistant']),
+  permissions: z.record(z.boolean()).default({}),
+});
+
+const roomStatusSchema = z.object({ isLive: z.boolean() });
+
 const sendGiftSchema = z.object({
   giftId: z.string().uuid(),
   recipientId: z.string().uuid(),
@@ -148,6 +191,18 @@ async function isRoomMember(roomId, userId) {
   return result.rows[0] || null;
 }
 
+async function ensureOwnerAccount() {
+  if (!pool || !ADMIN_PASSWORD) return;
+  const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, 12);
+  await pool.query(
+    `INSERT INTO users (username, display_name, password_hash, role)
+     VALUES ($1, $2, $3, 'owner')
+     ON CONFLICT (username) DO UPDATE SET display_name = EXCLUDED.display_name, role = 'owner', password_hash = EXCLUDED.password_hash, updated_at = NOW()`,
+    [ADMIN_USERNAME, ADMIN_DISPLAY_NAME, passwordHash],
+  );
+  console.log(`Owner account ${ADMIN_USERNAME} is ready.`);
+}
+
 async function initializeDatabase() {
   if (!pool) {
     console.warn('DATABASE_URL is not set; API will start in degraded mode.');
@@ -157,6 +212,7 @@ async function initializeDatabase() {
     const schemaPath = path.join(__dirname, '..', 'drizzle', 'schema.sql');
     const schema = await fs.readFile(schemaPath, 'utf8');
     await pool.query(schema);
+    await ensureOwnerAccount();
     databaseReady = true;
     console.log('PostgreSQL schema is ready.');
   } catch (error) {
@@ -209,9 +265,9 @@ app.post('/api/v1/auth/register', validate(registerSchema), async (req, res, nex
     const username = normalizeUsername(req.body.username);
     const passwordHash = await bcrypt.hash(req.body.password, 12);
     const result = await pool.query(
-      `INSERT INTO users (username, display_name, password_hash)
+       `INSERT INTO users (username, display_name, password_hash)
        VALUES ($1, $2, $3)
-       RETURNING id, username, display_name, avatar_url, bio, points, created_at`,
+       RETURNING id, username, display_name, avatar_url, bio, points, role, admin_permissions, created_at`,
       [username, req.body.displayName, passwordHash],
     );
     const user = result.rows[0];
@@ -228,7 +284,7 @@ app.post('/api/v1/auth/login', validate(loginSchema), async (req, res, next) => 
   try {
     const username = normalizeUsername(req.body.username);
     const result = await pool.query(
-      `SELECT id, username, display_name, avatar_url, bio, points, created_at, password_hash
+      `SELECT id, username, display_name, avatar_url, bio, points, role, admin_permissions, created_at, password_hash
        FROM users WHERE username = $1`,
       [username],
     );
@@ -251,7 +307,7 @@ app.get('/api/v1/users/search', authRequired, async (req, res, next) => {
     const query = String(req.query.q || '').trim();
     if (query.length < 2) return res.json({ ok: true, users: [] });
     const result = await pool.query(
-      `SELECT id, username, display_name, avatar_url, bio, points, created_at
+      `SELECT id, username, display_name, avatar_url, bio, points, role, admin_permissions, created_at
        FROM users
        WHERE username ILIKE $1 OR display_name ILIKE $1
        ORDER BY display_name ASC LIMIT 20`,
@@ -523,6 +579,90 @@ app.post('/api/v1/gifts/send', authRequired, validate(sendGiftSchema), async (re
   } finally {
     client.release();
   }
+});
+
+app.get('/api/v1/admin/summary', authRequired, adminRequired, async (req, res, next) => {
+  try {
+    const [users, rooms, gifts] = await Promise.all([
+      pool.query("SELECT COUNT(*)::int AS count FROM users"),
+      pool.query("SELECT COUNT(*)::int AS count, COUNT(*) FILTER (WHERE is_live = TRUE)::int AS live_count FROM rooms"),
+      pool.query("SELECT COUNT(*)::int AS count FROM gifts WHERE active = TRUE"),
+    ]);
+    res.json({ ok: true, summary: {
+      users: users.rows[0].count,
+      rooms: rooms.rows[0].count,
+      liveRooms: rooms.rows[0].live_count,
+      activeGifts: gifts.rows[0].count,
+      role: req.user.role,
+      permissions: req.user.admin_permissions || {},
+    } });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/v1/admin/users', authRequired, adminRequired, permissionRequired('manage_users'), async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, username, display_name, avatar_url, bio, points, role, admin_permissions, created_at FROM users ORDER BY created_at DESC LIMIT 200',
+    );
+    res.json({ ok: true, users: result.rows.map(publicUser) });
+  } catch (error) { next(error); }
+});
+
+app.post('/api/v1/admin/users', authRequired, adminRequired, permissionRequired('manage_users'), validate(createAdminUserSchema), async (req, res, next) => {
+  try {
+    const passwordHash = await bcrypt.hash(req.body.password, 12);
+    const result = await pool.query(
+      `INSERT INTO users (username, display_name, password_hash, role)
+       VALUES ($1, $2, $3, 'user')
+       RETURNING id, username, display_name, avatar_url, bio, points, role, admin_permissions, created_at`,
+      [normalizeUsername(req.body.username), req.body.displayName, passwordHash],
+    );
+    res.status(201).json({ ok: true, user: publicUser(result.rows[0]) });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ ok: false, error: 'username_taken', message: 'اسم المستخدم مستخدم مسبقاً.' });
+    next(error);
+  }
+});
+
+app.patch('/api/v1/admin/users/:userId/role', authRequired, ownerRequired, validate(updateAdminRoleSchema), async (req, res, next) => {
+  try {
+    if (req.params.userId === req.user.id) return res.status(409).json({ ok: false, error: 'cannot_change_owner', message: 'لا يمكن تغيير دور مالك التطبيق.' });
+    const result = await pool.query(
+      `UPDATE users SET role = $1, admin_permissions = $2, updated_at = NOW()
+       WHERE id = $3 AND role <> 'owner'
+       RETURNING id, username, display_name, avatar_url, bio, points, role, admin_permissions, created_at`,
+      [req.body.role, req.body.role === 'assistant' ? req.body.permissions : {}, req.params.userId],
+    );
+    if (!result.rows[0]) return res.status(404).json({ ok: false, error: 'user_not_found', message: 'المستخدم غير موجود أو هو مالك التطبيق.' });
+    res.json({ ok: true, user: publicUser(result.rows[0]) });
+  } catch (error) { next(error); }
+});
+
+app.delete('/api/v1/admin/users/:userId', authRequired, adminRequired, permissionRequired('manage_users'), async (req, res, next) => {
+  try {
+    const target = await pool.query('SELECT id, role FROM users WHERE id = $1', [req.params.userId]);
+    if (!target.rows[0]) return res.status(404).json({ ok: false, error: 'user_not_found', message: 'المستخدم غير موجود.' });
+    if (target.rows[0].role === 'owner') return res.status(403).json({ ok: false, error: 'owner_protected', message: 'لا يمكن حذف مالك التطبيق.' });
+    if (target.rows[0].role !== 'user' && req.user.role !== 'owner') return res.status(403).json({ ok: false, error: 'owner_required', message: 'حذف حسابات الإدارة متاح للمالك فقط.' });
+    await pool.query('DELETE FROM users WHERE id = $1', [req.params.userId]);
+    res.json({ ok: true, userId: req.params.userId });
+  } catch (error) { next(error); }
+});
+
+app.patch('/api/v1/admin/rooms/:roomId/status', authRequired, adminRequired, permissionRequired('manage_rooms'), validate(roomStatusSchema), async (req, res, next) => {
+  try {
+    const result = await pool.query('UPDATE rooms SET is_live = $1, updated_at = NOW() WHERE id = $2 RETURNING id, is_live', [req.body.isLive, req.params.roomId]);
+    if (!result.rows[0]) return res.status(404).json({ ok: false, error: 'room_not_found', message: 'الغرفة غير موجودة.' });
+    res.json({ ok: true, room: { id: result.rows[0].id, isLive: result.rows[0].is_live } });
+  } catch (error) { next(error); }
+});
+
+app.delete('/api/v1/admin/rooms/:roomId', authRequired, adminRequired, permissionRequired('manage_rooms'), async (req, res, next) => {
+  try {
+    const result = await pool.query('DELETE FROM rooms WHERE id = $1 RETURNING id', [req.params.roomId]);
+    if (!result.rows[0]) return res.status(404).json({ ok: false, error: 'room_not_found', message: 'الغرفة غير موجودة.' });
+    res.json({ ok: true, roomId: req.params.roomId });
+  } catch (error) { next(error); }
 });
 
 app.get('/api/v1/gifts/history', authRequired, async (req, res, next) => {
