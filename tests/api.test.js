@@ -27,6 +27,16 @@ test('API index advertises the v1 contract', async () => {
   });
 });
 
+test('live healthcheck succeeds without DATABASE_URL', async () => {
+  await withServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/health/live`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.status, 'alive');
+  });
+});
+
 test('health reports degraded mode without DATABASE_URL', async () => {
   delete process.env.DATABASE_URL;
   await withServer(async (baseUrl) => {
