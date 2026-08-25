@@ -1,0 +1,16 @@
+# Railway يضيف DATABASE_URL تلقائياً عند ربط خدمة PostgreSQL بالخدمة
+DATABASE_URL=postgresql://user:password@host:5432/database
+
+# غيّر هذه القيمة إلى نص عشوائي طويل، ولا ترفعها إلى GitHub
+JWT_SECRET=replace-with-a-long-random-secret
+
+# Railway يحدد PORT تلقائياً؛ القيمة المحلية اختيارية
+PORT=3000
+NODE_ENV=production
+
+# استخدم * أثناء التجربة. عند نشر التطبيق، ضع نطاق التطبيق المسموح به.
+CORS_ORIGIN=*
+
+# اجعله true فقط إذا طلب اتصال PostgreSQL استخدام SSL
+PGSSL=false
+DB_POOL_MAX=10
