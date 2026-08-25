@@ -57,7 +57,7 @@ test('unknown routes return a JSON 404', async () => {
   });
 });
 
-test('user serialization removes password hashes and token can be created', () => {
+test('owner role is included in JWT and password hashes stay private', () => {
   const user = {
     id: '00000000-0000-0000-0000-000000000001',
     username: 'tester',
@@ -65,11 +65,18 @@ test('user serialization removes password hashes and token can be created', () =
     avatar_url: null,
     bio: null,
     points: '250',
+    role: 'owner',
+    admin_permissions: { manage_users: true },
     created_at: new Date().toISOString(),
     password_hash: 'must-not-leak',
   };
   const serialized = publicUser(user);
   assert.equal(serialized.points, 250);
+  assert.equal(serialized.role, 'owner');
+  assert.deepEqual(serialized.permissions, { manage_users: true });
   assert.equal(serialized.password_hash, undefined);
-  assert.match(createToken(user), /^ey[A-Za-z0-9_-]+\./);
+  const token = createToken(user);
+  assert.match(token, /^ey[A-Za-z0-9_-]+\./);
+  const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
+  assert.equal(payload.role, 'owner');
 });
