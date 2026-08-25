@@ -165,6 +165,10 @@ async function initializeDatabase() {
   }
 }
 
+app.get('/health/live', (req, res) => {
+  res.status(200).json({ ok: true, service: 'chat-buzz-api', status: 'alive' });
+});
+
 app.get('/health', async (req, res) => {
   let database = 'not_configured';
   if (pool) {
